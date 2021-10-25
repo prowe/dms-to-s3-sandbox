@@ -1,0 +1,269 @@
+Description: sandbox for DMS to S3 replication
+Parameters:
+  DBUsername:
+    NoEcho: 'true'
+    Type: String
+    MinLength: '1'
+    MaxLength: '16'
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+    ConstraintDescription: must begin with a letter and contain only alphanumeric characters.
+    Default: 'adminadmin'
+
+  DBPassword:
+    NoEcho: 'true'
+    Type: String
+    MinLength: '8'
+    MaxLength: '41'
+    AllowedPattern: '[a-zA-Z0-9]*'
+    ConstraintDescription: must contain only alphanumeric characters.
+    Default: 'password'
+
+Resources:
+  ClusterParameterGroup:
+    Type: AWS::RDS::DBClusterParameterGroup
+    Properties: 
+      Description: Replication enabled db parameters
+      Family: 'aurora-postgresql12'
+      Parameters:
+        "rds.logical_replication": 1
+
+  AuroraDBCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      Engine: aurora-postgresql
+      EngineVersion: "12.6"
+      DatabaseName: my_db
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      DBClusterParameterGroupName: !Ref ClusterParameterGroup
+      EnableIAMDatabaseAuthentication: true
+      VpcSecurityGroupIds:
+        - !Ref DBSecurityGroup
+
+  AuroraDBFirstInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceClass: 'db.t3.medium'
+      DBClusterIdentifier: !Ref AuroraDBCluster  
+      Engine: aurora-postgresql
+      EngineVersion: "12.6"
+      AutoMinorVersionUpgrade: true
+      PubliclyAccessible: true
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties: 
+      GroupDescription: DB Security Group
+      VpcId: 'vpc-df49abb4'
+      SecurityGroupIngress: 
+        - CidrIp: '0.0.0.0/0'
+          FromPort: 3306
+          ToPort: 3306
+          IpProtocol: tcp
+
+  # RDSCluster:
+  #   Type: 'AWS::RDS::DBCluster'
+  #   Properties:
+  #     MasterUsername: !Ref DBUsername
+  #     MasterUserPassword: !Ref DBPassword
+  #     Engine: aurora-postgresql
+  #     EngineVersion: "10.14"
+  #     EngineMode: serverless
+  #     EnableHttpEndpoint: true
+  #     DatabaseName: my_db
+  #     DBClusterParameterGroupName: !Ref ClusterParameterGroup
+  #     ScalingConfiguration:
+  #       AutoPause: true
+  #       MinCapacity: 2
+  #       MaxCapacity: 32
+  #       SecondsUntilAutoPause: 1000
+      
+  DataBucket:
+    Type: AWS::S3::Bucket
+
+  DMSRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: dms-vpc-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - dms.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonDMSVPCManagementRole
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: 's3:*'
+                Resource:
+                  - !GetAtt DataBucket.Arn
+                  - !Sub "${DataBucket.Arn}/*"
+  
+  DMSLoggingRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: dms-cloudwatch-logs-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - dms.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - 'logs:*'
+                Resource: '*'
+
+  DBEndpoint:
+    Type: AWS::DMS::Endpoint
+    Properties: 
+      EndpointType: source
+      EngineName: aurora-postgresql
+      ServerName: !GetAtt AuroraDBCluster.Endpoint.Address
+      Port: !GetAtt AuroraDBCluster.Endpoint.Port
+      Username: !Ref DBUsername
+      Password: !Ref DBPassword
+      DatabaseName: my_db
+
+  S3Endpoint: 
+    Type: AWS::DMS::Endpoint
+    Properties: 
+      EndpointType: target
+      EngineName: s3
+      ExtraConnectionAttributes: "DataFormat=parquet;parquetVersion=PARQUET_2_0;parquetTimestampInMillisecond=true;includeOpForFullLoad=true;DatePartitionEnabled=true"
+      S3Settings:
+        BucketName: !Ref DataBucket
+        BucketFolder: ingest
+        CompressionType: gzip
+        ServiceAccessRoleArn: !GetAtt DMSRole.Arn
+        # ExternalTableDefinition: 
+  
+  # ReplicationSubnetGroup:
+  #   Type: AWS::DMS::ReplicationSubnetGroup
+  #   Properties: 
+  #     ReplicationSubnetGroupDescription: Replication subnet group
+  #     SubnetIds: 
+  #       - subnet-3477dc78
+  #       - subnet-e8415480  
+
+  ReplicationInstance:
+    Type: AWS::DMS::ReplicationInstance
+    DependsOn:
+      - DMSRole
+      - DMSLoggingRole
+    Properties: 
+      PubliclyAccessible: true
+      ReplicationInstanceClass: "dms.t2.micro"
+
+  ReplicationTask2:
+    Type: "AWS::DMS::ReplicationTask"
+    Properties: 
+      MigrationType: full-load-and-cdc
+      ReplicationInstanceArn: !Ref ReplicationInstance
+      SourceEndpointArn: !Ref DBEndpoint
+      TargetEndpointArn: !Ref S3Endpoint
+      TableMappings: |
+        {
+          "rules": [
+            {
+              "rule-type": "selection",
+              "rule-id": "1", 
+              "rule-name": "1", 
+              "object-locator": { 
+                "schema-name": "public", 
+                "table-name": "%"
+              }, 
+              "rule-action": "include"
+            }
+          ]
+        }
+      ReplicationTaskSettings: |
+        {
+          "Logging": {
+            "EnableLogging": true
+          }
+        }
+
+  GlueRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "glue.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+      Policies:
+        - PolicyName: "root"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: "*"
+                Resource: "*"
+
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties: 
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        {}
+
+  WidgetsTable:
+    Type: AWS::Glue::Table
+    Properties: 
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref GlueDatabase
+      TableInput: 
+        Name: widgets
+        StorageDescriptor:
+          Compressed: true
+          Location: !Sub "s3://${DataBucket}/ingest/public/widgets/"
+          InputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe
+          Parameters:
+            classification: parquet
+          Columns:
+            - Name: id
+              Type: bigint
+            - Name: name
+              Type: string
+
+  QueryResultsBucket:
+    Type: AWS::S3::Bucket
+
+  Workgroup:
+    Type: AWS::Athena::WorkGroup
+    Properties: 
+      Name: prowe-dms-sandbox
+      WorkGroupConfiguration: 
+        ResultConfiguration:
+          OutputLocation: !Sub "s3://${QueryResultsBucket}/"
+  
+Outputs:
+  DBEndpoint:
+    Value: !GetAtt AuroraDBCluster.Endpoint.Address
+  DBPort:
+    Value: !GetAtt AuroraDBCluster.Endpoint.Port
