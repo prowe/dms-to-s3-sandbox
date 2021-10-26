@@ -18,8 +18,18 @@ Parameters:
     ConstraintDescription: must contain only alphanumeric characters.
     Default: 'password'
 
+  DeployIngestEnabled:
+    Type: String
+    Default: 'true'
+
+Conditions:
+  DeployIngest: !Equals
+    - !Ref DeployIngestEnabled
+    - 'true'
+
 Resources:
   ClusterParameterGroup:
+    Condition: DeployIngest
     Type: AWS::RDS::DBClusterParameterGroup
     Properties: 
       Description: Replication enabled db parameters
@@ -29,6 +39,7 @@ Resources:
 
   AuroraDBCluster:
     Type: AWS::RDS::DBCluster
+    Condition: DeployIngest
     Properties:
       Engine: aurora-postgresql
       EngineVersion: "12.6"
@@ -42,6 +53,7 @@ Resources:
 
   AuroraDBFirstInstance:
     Type: AWS::RDS::DBInstance
+    Condition: DeployIngest
     Properties:
       DBInstanceClass: 'db.t3.medium'
       DBClusterIdentifier: !Ref AuroraDBCluster  
@@ -52,6 +64,7 @@ Resources:
 
   DBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
+    Condition: DeployIngest
     Properties: 
       GroupDescription: DB Security Group
       VpcId: 'vpc-df49abb4'
@@ -82,6 +95,7 @@ Resources:
     Type: AWS::S3::Bucket
 
   DMSRole:
+    Condition: DeployIngest
     Type: 'AWS::IAM::Role'
     Properties:
       RoleName: dms-vpc-role
@@ -108,6 +122,7 @@ Resources:
                   - !Sub "${DataBucket.Arn}/*"
   
   DMSLoggingRole:
+    Condition: DeployIngest
     Type: 'AWS::IAM::Role'
     Properties:
       RoleName: dms-cloudwatch-logs-role
@@ -132,6 +147,7 @@ Resources:
 
   DBEndpoint:
     Type: AWS::DMS::Endpoint
+    Condition: DeployIngest
     Properties: 
       EndpointType: source
       EngineName: aurora-postgresql
@@ -142,11 +158,12 @@ Resources:
       DatabaseName: my_db
 
   S3Endpoint: 
+    Condition: DeployIngest
     Type: AWS::DMS::Endpoint
     Properties: 
       EndpointType: target
       EngineName: s3
-      ExtraConnectionAttributes: "DataFormat=parquet;parquetVersion=PARQUET_2_0;parquetTimestampInMillisecond=true;includeOpForFullLoad=true;DatePartitionEnabled=true"
+      ExtraConnectionAttributes: "DataFormat=parquet;parquetVersion=PARQUET_2_0;parquetTimestampInMillisecond=true;includeOpForFullLoad=true;DatePartitionEnabled=true;timestampColumnName=__tx_timestamp"
       S3Settings:
         BucketName: !Ref DataBucket
         BucketFolder: ingest
@@ -163,6 +180,7 @@ Resources:
   #       - subnet-e8415480  
 
   ReplicationInstance:
+    Condition: DeployIngest
     Type: AWS::DMS::ReplicationInstance
     DependsOn:
       - DMSRole
@@ -172,6 +190,7 @@ Resources:
       ReplicationInstanceClass: "dms.t2.micro"
 
   ReplicationTask2:
+    Condition: DeployIngest
     Type: "AWS::DMS::ReplicationTask"
     Properties: 
       MigrationType: full-load-and-cdc
@@ -246,10 +265,53 @@ Resources:
           Parameters:
             classification: parquet
           Columns:
+            - Name: __tx_timestamp
+              Type: string
             - Name: id
-              Type: bigint
+              Type: int
             - Name: name
               Type: string
+
+  WidgetsCuratedTable:
+    Type: AWS::Glue::Table
+    Properties: 
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref GlueDatabase
+      TableInput: 
+        Name: widgets_cleaned
+        Parameters:
+          classification: parquet
+        StorageDescriptor:
+          Compressed: true
+          Location: !Sub "s3://${DataBucket}/curated/widgets_cleaned/"
+          InputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe
+            Parameters:
+              'serialization.format': '1'
+          Columns:
+            - Name: widget_id
+              Type: int
+            - Name: widget_name
+              Type: string
+
+  WidgetsCuratedJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Command:
+        Name: glueetl
+        ScriptLocation: "src/populate_widgets_cleaned.py"
+        PythonVersion: 3
+      GlueVersion: "3.0"
+      DefaultArguments:
+        "--enable-glue-datacatalog": ''
+      #   "--job-bookmark-option": "job-bookmark-enable"
+      ExecutionProperty:
+        MaxConcurrentRuns: 1
+      MaxCapacity: 2
+      MaxRetries: 0
+      Role: !Ref GlueRole
 
   QueryResultsBucket:
     Type: AWS::S3::Bucket
@@ -264,6 +326,8 @@ Resources:
   
 Outputs:
   DBEndpoint:
+    Condition: DeployIngest
     Value: !GetAtt AuroraDBCluster.Endpoint.Address
   DBPort:
+    Condition: DeployIngest
     Value: !GetAtt AuroraDBCluster.Endpoint.Port

@@ -4,3 +4,4 @@ version = 0.1
 stack_name = "prowe-dms-sandbox"
 region = "us-east-2"
 capabilities = "CAPABILITY_IAM CAPABILITY_NAMED_IAM"
+s3_bucket = "prowe-sai-sandbox-dev-deploy"
