@@ -20,7 +20,7 @@ Parameters:
 
   DeployIngestEnabled:
     Type: String
-    Default: 'true'
+    Default: 'false'
 
 Conditions:
   DeployIngest: !Equals
@@ -266,6 +266,8 @@ Resources:
             classification: parquet
           Columns:
             - Name: __tx_timestamp
+              Type: string
+            - Name: Op
               Type: string
             - Name: id
               Type: int
