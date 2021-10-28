@@ -29,7 +29,7 @@ mapped_to_target = ApplyMapping.apply(
     mappings=[
         ("id", "int", "widget_id", "int"),
         ("name", "string", "widget_name", "string"),
-        ("__tx_timestamp", "string", "__tx_timestamp", "string"),
+        ("__tx_timestamp", "string", "__tx_timestamp", "timestamp"),
         ("op", "string", "op", "string"),
     ],
     transformation_ctx="ApplyMapping_node2",
@@ -38,8 +38,9 @@ mapped_to_target = ApplyMapping.apply(
 
 most_recent_window_spec = Window.partitionBy("widget_id").orderBy(col("__tx_timestamp").desc())
 de_duplicated = DynamicFrame.fromDF(
-    mapped_to_target.toDF().withColumn("rn", row_number().over(most_recent_window_spec)).where("rn = 1 and op != 'D'").drop("rn"),
-    glueContext
+    mapped_to_target.toDF().withColumn("rn", row_number().over(most_recent_window_spec)).where("rn = 1").drop("rn").where("op is null or op != 'D'"),
+    glueContext,
+    'de_duplicated'
 )
 
 glueContext.purge_table(

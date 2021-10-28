@@ -297,6 +297,8 @@ Resources:
               Type: int
             - Name: widget_name
               Type: string
+            - Name: __tx_timestamp
+              Type: timestamp
 
   MainWorkflow:
     Type: AWS::Glue::Workflow
