@@ -298,6 +298,9 @@ Resources:
             - Name: widget_name
               Type: string
 
+  MainWorkflow:
+    Type: AWS::Glue::Workflow
+
   WidgetsCuratedJob:
     Type: AWS::Glue::Job
     Properties:
@@ -315,6 +318,14 @@ Resources:
       MaxRetries: 0
       Role: !Ref GlueRole
 
+  WidgetsCuratedTrigger:
+    Type: AWS::Glue::Trigger
+    Properties: 
+      WorkflowName: !Ref MainWorkflow
+      Actions:
+        - JobName: !Ref WidgetsCuratedJob
+      Type: ON_DEMAND
+
   QueryResultsBucket:
     Type: AWS::S3::Bucket
 
@@ -325,7 +336,59 @@ Resources:
       WorkGroupConfiguration: 
         ResultConfiguration:
           OutputLocation: !Sub "s3://${QueryResultsBucket}/"
+
+  # LakeFormationSettings:
+  #   Type: AWS::LakeFormation::DataLakeSettings
+  #   Properties: 
+  #     Admins: 
+  #       - DataLakePrincipalIdentifier: !Sub "arn:aws:iam::${AWS::AccountId}:role/CognitoSAI-FederatedUserRole-3IHKNHJY8G3F"
+  #       - DataLakePrincipalIdentifier: !Sub "arn:aws:iam::${AWS::AccountId}:role/Admin"
+
+  # LakeFormationRole:
+  #   Type: AWS::IAM::Role
+  #   Properties:
+  #     AssumeRolePolicyDocument:
+  #       Version: "2012-10-17"
+  #       Statement:
+  #         - Effect: "Allow"
+  #           Principal:
+  #             Service:
+  #               - "lakeformation.amazonaws.com"
+  #           Action:
+  #             - "sts:AssumeRole"
+  #     ManagedPolicyArns:
+  #       - arn:aws:iam::aws:policy/AWSLakeFormationDataAdmin
+  #     Policies:
+  #       - PolicyName: root
+  #         PolicyDocument:
+  #           Version: "2012-10-17"
+  #           Statement:
+  #             - Effect: Allow
+  #               Action: 's3:*'
+  #               Resource:
+  #                 - !GetAtt DataBucket.Arn
+  #                 - !Sub "${DataBucket.Arn}/*"
+
+  # LakeFormationDataLocation:
+  #   Type: AWS::LakeFormation::Resource
+  #   Properties:
+  #     UseServiceLinkedRole: false
+  #     ResourceArn: !GetAtt DataBucket.Arn
+  #     RoleArn: !GetAtt LakeFormationRole.Arn
   
+  # LFPermissions:
+  #   DependsOn:
+  #     - LakeFormationSettings
+  #   Type: AWS::LakeFormation::Permissions
+  #   Properties:
+  #     DataLakePrincipal:
+  #       DataLakePrincipalIdentifier: !GetAtt GlueRole.Arn # !Sub "arn:aws:iam::${AWS::AccountId}:role/CognitoSAI-FederatedUserRole-3IHKNHJY8G3F"
+  #     Resource:
+  #       DatabaseResource:
+  #         Name: !Ref GlueDatabase
+  #     Permissions:
+  #       - ALL
+
 Outputs:
   DBEndpoint:
     Condition: DeployIngest

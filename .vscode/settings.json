@@ -1,0 +1,8 @@
+{
+    "python.autoComplete.extraPaths": [
+        "./glue-libs-v3.0.zip"
+    ],
+    "python.analysis.extraPaths": [
+        "./glue-libs-v3.0.zip"
+    ]
+}

@@ -1,9 +1,13 @@
 import sys
 from awsglue.transforms import *
+from awsglue import DynamicFrame
 from awsglue.utils import getResolvedOptions
 from pyspark.context import SparkContext
 from awsglue.context import GlueContext
 from awsglue.job import Job
+from pyspark.sql.window import Window
+from pyspark.sql.functions import row_number, col
+
 
 args = getResolvedOptions(sys.argv, ["JOB_NAME"])
 sc = SparkContext()
@@ -20,18 +24,23 @@ DataCatalogtable_node1 = glueContext.create_dynamic_frame.from_catalog(
 )
 
 # Script generated for node ApplyMapping
-ApplyMapping_node2 = ApplyMapping.apply(
+mapped_to_target = ApplyMapping.apply(
     frame=DataCatalogtable_node1,
     mappings=[
         ("id", "int", "widget_id", "int"),
         ("name", "string", "widget_name", "string"),
+        ("__tx_timestamp", "string", "__tx_timestamp", "string"),
+        ("op", "string", "op", "string"),
     ],
     transformation_ctx="ApplyMapping_node2",
 )
 
-collapsed_df = ApplyMapping_node2.repartition(1)
 
-collapsed_df.show()
+most_recent_window_spec = Window.partitionBy("widget_id").orderBy(col("__tx_timestamp").desc())
+de_duplicated = DynamicFrame.fromDF(
+    mapped_to_target.toDF().withColumn("rn", row_number().over(most_recent_window_spec)).where("rn = 1 and op != 'D'").drop("rn"),
+    glueContext
+)
 
 glueContext.purge_table(
     database="gluedatabase-fps8tgqr4qfm",
@@ -43,7 +52,7 @@ glueContext.purge_table(
 
 # Script generated for node Data Catalog table
 DataCatalogtable_node3 = glueContext.write_dynamic_frame.from_catalog(
-    frame=collapsed_df,
+    frame=de_duplicated,
     database="gluedatabase-fps8tgqr4qfm",
     table_name="widgets_cleaned",
     transformation_ctx="DataCatalogtable_node3",
